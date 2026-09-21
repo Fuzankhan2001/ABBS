@@ -1,0 +1,2 @@
+import type { Assessment, ComponentRecord, LotMetrics, UploadMetadata } from '../types/assessment';
+export interface AssessmentAdapter { runMissionAssessment(profile: string): Promise<Assessment>; validateUpload(file: File): Promise<UploadMetadata>; runUploadedAssessment(file: File): Promise<Assessment>; getComponent(componentId: string): Promise<ComponentRecord>; getLot(lotId: string): Promise<LotMetrics>; }
