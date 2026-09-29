@@ -17,18 +17,19 @@ class ComponentResult(BaseModel):
     lot: str
     verdict: Literal["QUALIFIED", "MODULE A ANOMALY", "EARLY DRIFT REJECT", "FINAL REJECT"]
     moduleA: Literal["PASS", "FLAGGED", "REJECT"]
-    moduleB: Literal["PASS", "FLAGGED", "REJECT"]
+    moduleB: Literal["PASS", "FLAGGED", "REJECT", "NOT EVALUATED"]
     iddq0: float
     iddq24: float
     iddq96: float | None = None
     iddq168: float | None = None
-    forecast168: float
-    slope: float
+    forecast168: float | None = None
+    slope: float | None = None
     mahalanobis: float
     patViolated: bool
     covarianceViolated: bool
     moduleAReject: bool
     moduleBEarlyReject: bool
+    moduleBEvaluated: bool = True
     finalSystemReject: bool
     reason: str
     moduleBReason: str
@@ -76,3 +77,5 @@ class ErrorResponse(BaseModel):
     error: str
     message: str
     missing_columns: list[str] = []
+    row: int | None = None
+    column: str | None = None

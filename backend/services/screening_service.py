@@ -5,6 +5,7 @@ import secrets
 from threading import Lock
 
 import pandas as pd
+import numpy as np
 
 from module_A import AdvancedScreeningEngine
 import module_B as module_b
@@ -18,10 +19,12 @@ MISSION_PROFILES = {
 class ScreeningValidationError(ValueError):
     """A client-facing telemetry validation failure."""
 
-    def __init__(self, message: str, error: str = "VALIDATION_ERROR", missing_columns: list[str] | None = None) -> None:
+    def __init__(self, message: str, error: str = "VALIDATION_ERROR", missing_columns: list[str] | None = None, row: int | None = None, column: str | None = None) -> None:
         super().__init__(message)
         self.error = error
         self.missing_columns = missing_columns or []
+        self.row = row
+        self.column = column
 
 
 class ScreeningService:
@@ -50,10 +53,17 @@ class ScreeningService:
         missing = sorted(REQUIRED_COLUMNS - set(raw_df.columns))
         if missing:
             raise ScreeningValidationError("The uploaded ATE dataset does not contain the required telemetry fields.", "INVALID_DATASET_SCHEMA", missing)
+        for column in ("Component_ID", "Lot_ID"):
+            missing_row = raw_df[column].isna() | raw_df[column].astype(str).str.strip().eq("")
+            if missing_row.any():
+                row = int(raw_df.index[missing_row][0]) + 2
+                raise ScreeningValidationError(f"Required identifier '{column}' is missing at CSV row {row}.", "MISSING_IDENTIFIER", row=row, column=column)
         for column in ("Iddq_0h_uA", "Iddq_24h_uA"):
             values = pd.to_numeric(raw_df[column], errors="coerce")
-            if values.isna().any():
-                raise ScreeningValidationError(f"Telemetry field '{column}' contains non-numeric or missing values.", "INVALID_DATASET_VALUES")
+            invalid = values.isna() | ~np.isfinite(values)
+            if invalid.any():
+                row = int(raw_df.index[invalid][0]) + 2
+                raise ScreeningValidationError(f"Telemetry field '{column}' has a missing, non-numeric, or non-finite value at CSV row {row}.", "INVALID_DATASET_VALUES", row=row, column=column)
 
     def run_upload(self, raw_df: pd.DataFrame, filename: str) -> dict:
         self.validate_dataframe(raw_df)
@@ -135,11 +145,14 @@ class ScreeningService:
             verdict = "EARLY DRIFT REJECT"
         else:
             verdict = "QUALIFIED"
+        module_b_evaluated = bool(row.get("Module_B_Evaluated", 1))
         module_b_reason = (
-            f"Projected degradation slope of {float(row['Projected_Slope']):.4f} µA/hr exceeds the 0.0400 µA/hr early-rejection threshold."
+            f"Projected degradation slope of {float(row['Projected_Slope']):.4f} µA/hr exceeds the {module_b.DEFAULT_SLOPE_THRESHOLD:.4f} µA/hr early-rejection threshold."
             if module_b_reject
-            else "Projected leakage growth remains below the 0.0400 µA/hr early-rejection threshold."
+            else f"Projected leakage growth remains below the {module_b.DEFAULT_SLOPE_THRESHOLD:.4f} µA/hr early-rejection threshold."
         )
+        if not module_b_evaluated:
+            module_b_reason = "Module B was not evaluated: this component was rejected by Module A and stopped by the strict cascade."
         telemetry = [
             {"hour": 0, "value": float(row["Iddq_0h_uA"]), "forecast": False},
             {"hour": 24, "value": float(row["Iddq_24h_uA"]), "forecast": False},
@@ -148,18 +161,20 @@ class ScreeningService:
             telemetry.append({"hour": 96, "value": float(row["Iddq_96h_uA"]), "forecast": False})
         if "Iddq_168h_uA" in row.index and pd.notna(row["Iddq_168h_uA"]):
             telemetry.append({"hour": 168, "value": float(row["Iddq_168h_uA"]), "forecast": False})
-        telemetry.append({"hour": 168, "value": float(row["Pred_Iddq_168h_uA"]), "forecast": True})
+        if module_b_evaluated:
+            telemetry.append({"hour": 168, "value": float(row["Pred_Iddq_168h_uA"]), "forecast": True})
         return {
             "id": str(row["Component_ID"]), "lot": str(row["Lot_ID"]), "verdict": verdict,
             "moduleA": "FLAGGED" if module_a_reject else "PASS",
-            "moduleB": "REJECT" if module_b_reject else "PASS",
+            "moduleB": "NOT EVALUATED" if not module_b_evaluated else "REJECT" if module_b_reject else "PASS",
             "iddq0": float(row["Iddq_0h_uA"]), "iddq24": float(row["Iddq_24h_uA"]),
             "iddq96": float(row["Iddq_96h_uA"]) if "Iddq_96h_uA" in row.index and pd.notna(row["Iddq_96h_uA"]) else None,
             "iddq168": float(row["Iddq_168h_uA"]) if "Iddq_168h_uA" in row.index and pd.notna(row["Iddq_168h_uA"]) else None,
-            "forecast168": float(row["Pred_Iddq_168h_uA"]), "slope": float(row["Projected_Slope"]),
+            "forecast168": float(row["Pred_Iddq_168h_uA"]) if module_b_evaluated else None,
+            "slope": float(row["Projected_Slope"]) if module_b_evaluated else None,
             "mahalanobis": float(row["Mahalanobis_Distance"]), "patViolated": bool(row["PAT_Violated"]),
             "covarianceViolated": bool(row["Covariance_Violated"]), "moduleAReject": module_a_reject,
-            "moduleBEarlyReject": module_b_reject, "finalSystemReject": final_reject,
+            "moduleBEarlyReject": module_b_reject, "moduleBEvaluated": module_b_evaluated, "finalSystemReject": final_reject,
             "reason": str(row["QA_Engineering_Reason"]), "moduleBReason": module_b_reason, "telemetry": telemetry,
         }
 

@@ -23,7 +23,7 @@ screening_service = ScreeningService()
 
 @app.exception_handler(ScreeningValidationError)
 async def validation_exception_handler(_, exc: ScreeningValidationError):
-    return JSONResponse(status_code=422, content={"error": exc.error, "message": str(exc), "missing_columns": exc.missing_columns})
+    return JSONResponse(status_code=422, content={"error": exc.error, "message": str(exc), "missing_columns": exc.missing_columns, "row": exc.row, "column": exc.column})
 
 
 @app.get("/api/health")
